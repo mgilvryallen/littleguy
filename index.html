@@ -241,6 +241,82 @@
             margin-top: 14px;
         }
 
+        /* ---- Here ---- */
+        .here-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .here-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 20px 9px 16px;
+            background: var(--teal);
+            color: var(--parchment);
+            border: none;
+            border-radius: 999px;
+            font-family: 'Rug Pull', Georgia, serif;
+            font-size: 17px;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+        }
+
+        .here-btn:disabled {
+            cursor: default;
+        }
+
+        .here-btn .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--parchment);
+            transform: scale(var(--level, 1));
+            transition: transform 0.08s;
+        }
+
+        .here-btn.listening {
+            background: var(--berry);
+        }
+
+        .link-btn {
+            background: none;
+            border: none;
+            color: var(--green);
+            font-family: inherit;
+            font-size: 14px;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .here-note {
+            color: var(--muted);
+            font-size: 15px;
+            margin-top: 14px;
+        }
+
+        .here-note b {
+            font-family: 'Rug Pull', Georgia, serif;
+            font-weight: normal;
+            color: var(--teal);
+            letter-spacing: 0.5px;
+        }
+
+        .here-line {
+            display: block;
+            width: 100%;
+            height: 90px;
+            margin-top: 14px;
+            background: var(--parchment);
+            border: 1px solid var(--light-tan);
+        }
+
+        #hereRow {
+            margin-top: 18px;
+        }
+
         .credit {
             text-align: center;
             margin-top: 24px;
@@ -288,6 +364,20 @@
             </div>
         </div>
 
+        <div class="card" id="hereCard" style="--accent: var(--teal)">
+            <div class="here-head">
+                <button class="here-btn" id="hereBtn" onclick="listenHere()" disabled><span class="dot"></span><span id="hereBtnText">listen here</span></button>
+                <button class="link-btn" id="hereForget" onclick="forgetHere()" hidden>let it go</button>
+            </div>
+            <p class="here-note" id="hereNote">Record eight seconds of wherever you are. Little Guy finds the note the place hums at, plays in that key, and weaves the sound itself in.</p>
+            <canvas class="here-line" id="hereLine" aria-hidden="true" hidden></canvas>
+            <div class="slider-row" id="hereRow" style="--row: var(--teal)" hidden>
+                <div class="slider-name">Here</div>
+                <input type="range" id="here" min="0" max="1000" oninput="setSetting('here', this.value / 1000)" aria-label="Here">
+                <div class="slider-ends"><span>a trace</span><span>all around</span></div>
+            </div>
+        </div>
+
         <div class="credit">
             Made by <a href="https://mgilvryallen.com" target="_blank">M'Gilvry Allen</a><br><a href="https://github.com/mgilvryallen/littleguy" target="_blank">make your own copy</a>
         </div>
@@ -295,7 +385,7 @@
 
     <script>
         const SETTINGS_KEY = 'littleguySettings';
-        const DEFAULTS = { kindling: 0.35, hour: 0.5, gait: null, hum: 0.65 };
+        const DEFAULTS = { kindling: 0.35, hour: 0.5, gait: null, hum: 0.65, here: 0.5, place: null };
         const PHRASE = 4; // bars between the engine's chances to change its mind
 
         function loadSettings() {
@@ -352,6 +442,8 @@
             document.getElementById('playBtn').disabled = !stems.length;
             setText('playLabel', stems.length ? 'tap to play' : 'no loops found');
             renderPlayer();
+            document.getElementById('hereBtn').disabled = !stems.length || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+            await recallHere();
             requestTempo();
         }
 
@@ -543,20 +635,47 @@
             return promise;
         }
 
-        let wantedBpm = null;
-        let readyBpm = null;
+        // ---- Key ----
+        // A place you've recorded can move everything into its key. Loops change pitch the way a
+        // record does when it's sped up (playbackRate), and the same re-timing worker that does
+        // Gait slows them back down first, so the tempo holds. A loop's re-timed copies are filed
+        // under the tempo they were stretched to (its "key" here), so one copy can serve any pitch
+        // and tempo that need the same stretch.
+
+        // How far the place sits from the loops' own key, in cents
+        function placeShift() {
+            const place = settings.place;
+            return place ? place.semis * 100 + place.cents : 0;
+        }
+
+        function targetFor(bpm, cents) {
+            const ratio = Math.pow(2, cents / 1200);
+            return { bpm, cents, ratio, key: Math.round(bpm / ratio * 100) / 100 };
+        }
+
+        function sameTarget(a, b) {
+            return a && b && a.key === b.key && a.cents === b.cents;
+        }
+
+        // The bar length comes from the loop as it actually plays, so nothing drifts
+        function clockFor(start, bar, target) {
+            return { start, bar, barTime: loopSeconds(target.key) / target.ratio / index.bars, ...target };
+        }
+
+        let wanted = null;
+        let ready = null;
         let tempoTimer = null;
 
         function requestTempo() {
             clearTimeout(tempoTimer);
             tempoTimer = setTimeout(async () => {
-                const bpm = gaitBpm();
-                if (bpm === wantedBpm) return;
-                wantedBpm = bpm;
+                const target = targetFor(gaitBpm(), placeShift());
+                if (sameTarget(target, wanted)) return;
+                wanted = target;
                 // What's playing first, so the change can be heard soon; then what's likely next
-                await Promise.all(voices.map(v => ensureReady(v.stem, bpm)));
-                if (wantedBpm !== bpm) return;
-                readyBpm = bpm;
+                await Promise.all(voices.map(v => ensureReady(v.stem, target.key)));
+                if (wanted !== target) return;
+                ready = target;
                 prepare();
             }, 250);
         }
@@ -580,13 +699,13 @@
             prepTimer = setTimeout(async () => {
                 if (preparing) return prepare();
                 preparing = true;
-                const bpm = readyBpm ?? index.bpm;
+                const key = ready ? ready.key : index.bpm;
                 const keep = likely();
                 for (const stem of keep) {
-                    if ((readyBpm ?? index.bpm) !== bpm) break;
-                    await ensureReady(stem, bpm).catch(() => null);
+                    if ((ready ? ready.key : index.bpm) !== key) break;
+                    await ensureReady(stem, key).catch(() => null);
                 }
-                const tempos = new Set([bpm, clock && clock.bpm]);
+                const tempos = new Set([key, clock && clock.key]);
                 const wanted = new Set([...likely(), ...voices.map(v => v.stem)]);
                 // Away from the loops' own tempo, a re-timed copy is all that's needed; the original
                 // can be decoded again from the MP3 if the tempo comes back
@@ -703,8 +822,30 @@
             humRoom.gain.value = 0.35;
             humBus.connect(humRoom).connect(room);
             drone = makeDrone(ctx, humBus, keyIndex(index.drone.key), index.drone.octave);
+            // The place: its grains and its loop, dry and through a long, dark hall of their own
+            hereBus = ctx.createGain();
+            hereBus.gain.value = 0;
+            const hall = ctx.createConvolver();
+            hall.buffer = makeRoom(6.5);
+            const hallTone = ctx.createBiquadFilter();
+            hallTone.type = 'lowpass';
+            hallTone.frequency.value = 3800;
+            const hallWet = ctx.createGain();
+            hallWet.gain.value = 0.8;
+            const hereDry = ctx.createGain();
+            hereDry.gain.value = 0.5;
+            hereBus.connect(hereDry).connect(shade);
+            hereBus.connect(hall).connect(hallTone).connect(hallWet).connect(shade);
             applyShade(true);
             tuneDrone();
+        }
+
+        // The hum's key: the loops' own, moved by `cents`
+        function droneTo(cents, seconds) {
+            if (!drone) return;
+            const semis = Math.round(cents / 100);
+            const pitch = keyIndex(index.drone.key) + 12 * index.drone.octave + semis;
+            drone.retune(((pitch % 12) + 12) % 12, Math.floor(pitch / 12), cents - semis * 100, seconds);
         }
 
         function applyShade(immediate) {
@@ -723,14 +864,15 @@
         function makeDrone(context, output, key, octave) {
             let level = 0;
             let fade = null; // when Little Guy sets it: how slowly voices move to new levels (seconds)
+            let glideTime = null; // likewise, how slowly it slides to a new key
             const settings = {
                 key, octave, cents: 0, mingle: 50, tone: 45, breath: 50,
                 voices: {}, levels: {}
             };
 
             const VOICES = [
-                { id: 'low', label: 'Low root', ratio: [1, 2], level: 70, color: 'var(--indigo)' },
-                { id: 'lowfourth', label: 'Low 4th', ratio: [2, 3], level: 50, color: 'var(--slate)' },
+                { id: 'low', label: 'Low root', ratio: [1, 2], level: 70, color: 'var(--indigo)', warm: true },
+                { id: 'lowfourth', label: 'Low 4th', ratio: [2, 3], level: 50, color: 'var(--slate)', warm: true },
                 { id: 'root', label: 'Root', ratio: [1, 1], level: 100, color: 'var(--rust)' },
                 { id: 'fourth', label: '4th', ratio: [4, 3], level: 55, color: 'var(--ochre)' },
                 { id: 'fifth', label: '5th', ratio: [3, 2], level: 80, color: 'var(--green)' },
@@ -791,6 +933,27 @@
                 return context.createPeriodicWave(real, imag);
             }
 
+            // The low voices get a rounder wave. A reed's buzzy upper harmonics, an octave down, crowd
+            // into the range where the ear hears them as rasp (the lawnmower). This one keeps a
+            // singing run of low overtones (2nd to 6th, the ones an overtone singer finds) and lets
+            // everything above fall away fast, with even and odd harmonics alike, more bowed than buzzed.
+            function warmWave(context) {
+                const count = 24;
+                const real = new Float32Array(count + 1);
+                const imag = new Float32Array(count + 1);
+                const random = seededRandom(5);
+                for (let n = 1; n <= count; n++) {
+                    let amp = Math.pow(n, -1.2);
+                    if (n === 1) amp *= 0.8;                         // the fundamental steps back a little
+                    if (n >= 2 && n <= 8) amp *= 1.5 - 0.04 * n;    // a soft glow of overtones
+                    if (n > 14) amp *= Math.pow(14 / n, 1.2);        // and a quicker fall above them
+                    const phase = random() * Math.PI * 2;
+                    real[n] = amp * Math.sin(phase);
+                    imag[n] = amp * Math.cos(phase);
+                }
+                return context.createPeriodicWave(real, imag);
+            }
+
             function softClipCurve(drive) {
                 const curve = new Float32Array(2048);
                 for (let i = 0; i < curve.length; i++) {
@@ -836,6 +999,10 @@
                 // Everything feeds the buzz through here, so the drive can ease off as voices stack up
                 const mix = context.createGain();
                 mix.connect(buzz);
+                // The low voices mostly skip the buzz: distortion on a low note is what made it rattle.
+                // This path matches the buzz's own gain on quiet signals, so loudness holds.
+                const clean = context.createGain();
+                clean.connect(tone);
 
                 // Bellows: two slow LFOs at unrelated rates, so the movement never quite repeats
                 const lfoA = context.createOscillator();
@@ -905,15 +1072,17 @@
                 undertowB.connect(undertowDrive).connect(mix.gain);
                 [undertowA, undertowB].forEach(lfo => lfo.start(now));
 
-                const eng = { ctx: context, wave: reedWave(context), buzz, mix, master, tone, nasal2, ampDepth, filterDepth, filterDepthB, bloomToneDepth, undertowVolume, undertowDrive, air, airGain, voices: {}, lastRoot: null, last: {} };
+                const eng = { ctx: context, wave: reedWave(context), warmWave: warmWave(context), buzz, mix, clean, master, tone, nasal2, ampDepth, filterDepth, filterDepthB, bloomToneDepth, undertowVolume, undertowDrive, air, airGain, voices: {}, lastRoot: null, last: {} };
                 // A spare reed bank for Mingle's wandering notes
                 eng.wanderers = WANDER_DETUNES.map(detunes => makeReeds(eng, detunes));
                 return eng;
             }
 
             // Three reeds -> level gain -> swell (each voice blooms and sinks over a minute or more, at
-            // its own rate) -> duck gain (Mingle dips a voice a touch while it's wandering) -> buzz
-            function makeReeds(eng, detunes, seed) {
+            // its own rate) -> duck gain (Mingle dips a voice a touch while it's wandering) -> buzz.
+            // warm (the low voices): a rounder wave, a filter that follows the pitch, a slow wander in
+            // tuning so the reeds breathe instead of pulse, and only a little of it goes to the buzz.
+            function makeReeds(eng, detunes, seed, warm) {
                 const c = eng.ctx;
                 const gain = c.createGain();
                 gain.gain.value = 0;
@@ -926,20 +1095,50 @@
                 bloom.connect(bloomDepth).connect(swell.gain);
                 bloom.start(c.currentTime);
                 const duck = c.createGain();
-                gain.connect(swell).connect(duck).connect(eng.mix);
+                let soften = null;
+                if (warm) {
+                    soften = c.createBiquadFilter();
+                    soften.type = 'lowpass';
+                    soften.Q.value = 0.5;
+                    soften.frequency.value = 600;
+                    gain.connect(soften).connect(swell).connect(duck);
+                    const grit = c.createGain();
+                    grit.gain.value = 0.2;
+                    const smooth = c.createGain();
+                    smooth.gain.value = 0.8 * 1.9;   // the buzz's small-signal gain is about 1.9
+                    duck.connect(grit).connect(eng.mix);
+                    duck.connect(smooth).connect(eng.clean);
+                } else {
+                    gain.connect(swell).connect(duck).connect(eng.mix);
+                }
+                // Slow, uneven drift in each reed's tuning (a cent or two over ten to twenty seconds)
+                let drift = null;
+                if (warm) {
+                    drift = [c.createOscillator(), c.createOscillator()];
+                    drift[0].frequency.value = 0.053 + 0.011 * (seed % 3);
+                    drift[1].frequency.value = 0.089 + 0.007 * (seed % 4);
+                    drift.forEach(lfo => lfo.start(c.currentTime));
+                }
                 const oscillators = detunes.map((detune, r) => {
                     const osc = c.createOscillator();
-                    osc.setPeriodicWave(eng.wave);
+                    osc.setPeriodicWave(warm ? eng.warmWave : eng.wave);
+                    if (drift) {
+                        [[1.4, -0.6, 1.1][r], [-0.5, 1.2, -0.9][r]].forEach((depth, k) => {
+                            const amount = c.createGain();
+                            amount.gain.value = depth;
+                            drift[k].connect(amount).connect(osc.detune);
+                        });
+                    }
                     osc.detune.value = detune;
                     const reedGain = c.createGain();
-                    reedGain.gain.value = 0.11;
+                    reedGain.gain.value = warm ? 0.1 : 0.11;
                     const pan = c.createStereoPanner();
-                    pan.pan.value = [-0.45, 0, 0.45][r];
+                    pan.pan.value = [-0.45, 0, 0.45][r] * (warm ? 0.6 : 1);
                     osc.connect(reedGain).connect(pan).connect(gain);
                     osc.start(c.currentTime);
                     return osc;
                 });
-                return { gain, duck, oscillators, detunes, busyUntil: -1, sourceId: null };
+                return { gain, duck, soften, oscillators, detunes, busyUntil: -1, sourceId: null };
             }
 
             function stirUndertow(eng, t) {
@@ -960,7 +1159,7 @@
 
             // Voices are only built once they're first turned on, to spare the phone's processor
             function voiceNodes(eng, voice) {
-                if (!eng.voices[voice.id]) eng.voices[voice.id] = makeReeds(eng, REED_DETUNES[VOICES.indexOf(voice)], VOICES.indexOf(voice));
+                if (!eng.voices[voice.id]) eng.voices[voice.id] = makeReeds(eng, REED_DETUNES[VOICES.indexOf(voice)], VOICES.indexOf(voice), voice.warm);
                 return eng.voices[voice.id];
             }
 
@@ -1001,7 +1200,7 @@
             function applyAll(eng, immediate) {
                 if (!eng) return;
                 const t = eng.ctx.currentTime;
-                const glide = immediate ? 0.001 : 0.04;
+                const glide = immediate ? 0.001 : glideTime ?? 0.04;
                 const root = rootFrequency();
                 const blend = blendFactor();
 
@@ -1016,8 +1215,11 @@
                 const slow = immediate ? 0.001 : 1.2;
                 VOICES.forEach(voice => {
                     if (!settings.voices[voice.id] && !eng.voices[voice.id]) return;
-                    const { gain, oscillators } = voiceNodes(eng, voice);
+                    const { gain, oscillators, soften } = voiceNodes(eng, voice);
                     oscillators.forEach(osc => osc.frequency.setTargetAtTime(root * ratioOf(voice), t, glide));
+                    // Keeps the first eight or so overtones, opening a little with Tone. A floor keeps a
+                    // very low note's overtones up where a phone speaker can still sound them.
+                    if (soften) soften.frequency.setTargetAtTime(Math.max(root * ratioOf(voice) * (6 + settings.tone / 100 * 5), 500 + settings.tone * 5), t, glide);
                     const on = Boolean(settings.voices[voice.id]);
                     const toggled = last[voice.id] !== undefined && last[voice.id].on !== on;
                     const moved = last[voice.id] !== undefined && last[voice.id].level !== settings.levels[voice.id];
@@ -1029,6 +1231,7 @@
                 const cutoff = toneCutoff();
                 const toneMoved = last.tone !== undefined && last.tone !== settings.tone;
                 eng.mix.gain.setTargetAtTime(stackDrive(), t, slow);
+                eng.clean.gain.setTargetAtTime(stackDrive(), t, slow);
                 const breath = settings.breath / 100;
                 eng.tone.frequency.setTargetAtTime(cutoff, t, immediate || toneMoved ? 0.08 : slow);
                 eng.bloomToneDepth.gain.setTargetAtTime(cutoff * 0.08, t, 0.5);
@@ -1235,6 +1438,14 @@
                     }
                     if (playing && !mingleWas !== !settings.mingle) scheduleMingle();
                 },
+                // A new key: the voices slide there, taking about `seconds`
+                retune(key, octave, cents, seconds) {
+                    Object.assign(settings, { key, octave, cents });
+                    if (!engine) return;
+                    glideTime = Math.max(0.001, seconds / 3);
+                    applyAll(engine, !seconds);
+                    glideTime = null;
+                },
                 voiceCount: () => VOICES.filter(v => settings.voices[v.id]).length
             };
         }
@@ -1295,7 +1506,7 @@
 
             for (const role of ['bed', 'low', 'rhythm', 'tune']) {
                 const mine = live.filter(v => v.stem.role === role);
-                const candidates = stems.filter(s => s.role === role && !used.has(s.instrument) && bufferFor(s, clock.bpm));
+                const candidates = stems.filter(s => s.role === role && !used.has(s.instrument) && bufferFor(s, clock.key));
                 const fresh = s => Math.pow(score(s), 2) * (n - s.lastHeard < 8 ? 0.35 : 1) + 1e-6;
                 const worst = () => mine.reduce((a, b) => score(a.stem) <= score(b.stem) ? a : b);
 
@@ -1442,13 +1653,14 @@
 
         // A stem's loop, started at bar n so it lines up with everything else
         function startSource(voice, n, at, crossfade) {
-            const buffer = bufferFor(voice.stem, clock.bpm);
+            const buffer = bufferFor(voice.stem, clock.key);
             const source = ctx.createBufferSource();
             source.buffer = buffer;
             source.loop = true;
+            source.playbackRate.value = clock.ratio;
             const gain = ctx.createGain();
             source.connect(gain).connect(voice.layer);
-            const offset = ((n % index.bars) * clock.barTime) % buffer.duration;
+            const offset = ((n % index.bars) * clock.barTime * clock.ratio) % buffer.duration;
             if (crossfade) {
                 gain.gain.setValueAtTime(0, at);
                 gain.gain.linearRampToValueAtTime(1, at + crossfade);
@@ -1458,9 +1670,12 @@
             voice.sources.push({ source, gain });
         }
 
-        // New tempo: every voice switches to its re-timed loop on the same bar line
-        function changeTempo(n, at, bpm) {
-            clock = { start: at, bar: n, barTime: loopSeconds(bpm) / index.bars, bpm };
+        // New tempo or key: every voice switches to its re-timed loop on the same bar line, and
+        // the hum slides to the new key with them
+        function changeTempo(n, at, target) {
+            const moved = clock && clock.cents !== target.cents;
+            clock = clockFor(at, n, target);
+            if (moved) droneTo(target.cents, 2.5);
             const swap = 0.06;
             voices.forEach(voice => {
                 const old = voice.sources.splice(0);
@@ -1475,8 +1690,8 @@
 
         function onBar(n, at) {
             // Only when every voice (fading ones too) has its re-timed loop, so nothing falls out of step
-            if (readyBpm !== null && readyBpm !== clock.bpm && voices.every(v => bufferFor(v.stem, readyBpm))) {
-                changeTempo(n, at, readyBpm);
+            if (ready && !sameTarget(ready, clock) && voices.every(v => bufferFor(v.stem, ready.key))) {
+                changeTempo(n, at, ready);
                 prepare();
             }
             const phrase = n % PHRASE === 0;
@@ -1492,6 +1707,7 @@
                 onBar(nextBar, barStart(nextBar));
                 nextBar++;
             }
+            scheduleGrains(ahead);
         }
 
         // ---- Play ----
@@ -1507,17 +1723,20 @@
             if (playing) {
                 await ctx.resume();
                 const start = ctx.currentTime + 0.15;
-                // Start at the chosen tempo if the likely loops are ready for it, else where they were made
-                const ready = bpm => stems.some(s => s.role === 'tune' && bufferFor(s, bpm));
-                const bpm = readyBpm !== null && ready(readyBpm) ? readyBpm : index.bpm;
-                clock = { start, bar: 0, barTime: loopSeconds(bpm) / index.bars, bpm };
+                // Start at the chosen tempo and key if the likely loops are ready for them, else
+                // where they were made (and move over on a bar line once they are)
+                const readyFor = key => stems.some(s => s.role === 'tune' && bufferFor(s, key));
+                const target = ready && readyFor(ready.key) ? ready : targetFor(index.bpm, 0);
+                clock = clockFor(start, 0, target);
                 nextBar = 0;
                 voices = [];
                 // Open with the hum, a bed if it wants one and one tune; the rest arrive a bar at a time
                 const counts = wantedCounts();
-                const opening = (counts.bed ? ['bed', 'tune'] : ['tune']).map(role => stems.filter(s => s.role === role && bufferFor(s, bpm))).filter(list => list.length);
+                const opening = (counts.bed ? ['bed', 'tune'] : ['tune']).map(role => stems.filter(s => s.role === role && bufferFor(s, target.key))).filter(list => list.length);
                 opening.forEach(list => join(pickWeighted(list, s => Math.pow(score(s), 2) + 1e-6), 0, start, 0.01));
+                droneTo(target.cents, 0);
                 drone.start();
+                startHere(start);
                 humLife.timer = setTimeout(liveHum, 6000);
                 nextBar = 1;
                 unsettled = true;
@@ -1534,6 +1753,7 @@
                 master.gain.setValueAtTime(master.gain.value, t);
                 master.gain.linearRampToValueAtTime(0, t + 1.2);
                 drone.stop();
+                stopHere(t + 1.3);
                 clearTimeout(humLife.timer);
                 const stopping = voices;
                 voices = [];
@@ -1542,7 +1762,7 @@
                         v.sources.forEach(s => { try { s.source.stop(); } catch (e) {} });
                         Object.values(v.motion).forEach(m => { try { m && m.lfo.stop(); } catch (e) {} });
                     });
-                    if (!playing) ctx.suspend();
+                    if (!playing && !listening) ctx.suspend();
                 }, 1400);
                 releaseWakeLock();
                 renderNow();
@@ -1573,10 +1793,517 @@
             unsettled = true;
             if (name === 'gait') requestTempo();
             if (name === 'hour') applyShade(false);
+            if (name === 'here') tuneHere();
             if (name !== 'gait') prepare();
             tuneDrone();
             renderNow();
         }
+
+        // ---- Here ----
+        // Eight seconds of wherever you are. Little Guy listens for the note the place hums at,
+        // moves the hum and the loops into that key, and weaves the recording in: grains of it,
+        // tuned to the hum (as is, an octave either way, a fifth, a twelfth), scattered through a
+        // long hall, some landing on the beat as the fire builds, over a faint loop of the place.
+
+        const HERE_SECONDS = 8;
+        const NOTE_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+        let hereBus = null;
+        let hereBuffer = null;     // the recording, evened out
+        let hereLoopBuffer = null; // the same, folded so it loops without a seam
+        let hereLoop = null;
+        let hereHeard = null;      // what hearPitch found
+        let nextGrain = 0;
+        let listening = false;
+        const sparks = [];
+
+        // ---- Hearing the pitch ----
+        // Pitch, frame by frame (YIN: how well the sound lines up with itself a period later), each
+        // frame weighted by how clearly pitched and how loud it is. Every pitch is folded into one
+        // octave and they vote; the winner, fine-tuned to the frames that agree with it, is the
+        // place's note. Rooms full of noise and no clear pitch fall back to the spectrum: the
+        // strongest low hum with overtones lined up above it.
+        function hearPitch(samples, rate) {
+            const step = Math.max(1, Math.round(rate / 12000));
+            const sr = rate / step;
+            const n = Math.floor(samples.length / step);
+            const x = new Float32Array(n);
+            let mean = 0;
+            for (let i = 0; i < n; i++) {
+                let sum = 0;
+                for (let j = 0; j < step; j++) sum += samples[i * step + j];
+                x[i] = sum / step;
+                mean += x[i] / n;
+            }
+            for (let i = 0; i < n; i++) x[i] -= mean;
+
+            const frame = 1024;
+            const hop = 256;
+            const minLag = Math.floor(sr / 1000);
+            const maxLag = Math.floor(sr / 50);
+            const width = frame - maxLag;
+            const d = new Float32Array(maxLag + 2);
+            const frames = [];
+            let total = 0;
+            let loudness = 0;
+            for (let start = 0; start + frame <= n; start += hop) {
+                total++;
+                let energy = 0;
+                for (let j = 0; j < frame; j++) energy += x[start + j] * x[start + j];
+                const rms = Math.sqrt(energy / frame);
+                loudness += rms;
+                if (rms < 2e-4) continue;
+                d[0] = 1;
+                let running = 0;
+                for (let tau = 1; tau <= maxLag + 1; tau++) {
+                    let sum = 0;
+                    for (let j = 0; j < width; j++) {
+                        const diff = x[start + j] - x[start + j + tau];
+                        sum += diff * diff;
+                    }
+                    running += sum;
+                    d[tau] = running ? sum * tau / running : 1;
+                }
+                let tau = -1;
+                for (let t = minLag; t <= maxLag; t++) {
+                    if (d[t] < 0.25) {
+                        while (t + 1 <= maxLag && d[t + 1] < d[t]) t++;
+                        tau = t;
+                        break;
+                    }
+                }
+                if (tau < 0) continue;
+                const a = d[tau - 1], b = d[tau], c = d[tau + 1];
+                const shift = (a - 2 * b + c) ? 0.5 * (a - c) / (a - 2 * b + c) : 0;
+                const hz = sr / (tau + Math.max(-1, Math.min(1, shift)));
+                frames.push({ t: start / sr, hz, w: (1 - b) * rms });
+            }
+            loudness /= Math.max(1, total);
+
+            const centsOf = hz => 1200 * Math.log2(hz / 440) + 6900;
+            const fold = c => ((c % 1200) + 1200) % 1200;
+            const around = (c, center) => ((c - center + 1800) % 1200 + 1200) % 1200 - 600;
+            let peak;
+            const voiced = frames.length / Math.max(1, total);
+            if (voiced >= 0.08) {
+                // Each frame votes for its pitch, softened over about a quarter tone
+                const votes = new Float32Array(1200);
+                frames.forEach(f => {
+                    const c = fold(centsOf(f.hz));
+                    for (let k = -60; k <= 60; k += 2) votes[Math.round(fold(c + k)) % 1200] += f.w * Math.exp(-k * k / 1250);
+                });
+                peak = votes.indexOf(Math.max(...votes));
+                // Fine-tune to the frames that agree
+                let sum = 0, weight = 0;
+                frames.forEach(f => {
+                    const off = around(centsOf(f.hz), peak);
+                    if (Math.abs(off) < 50) { sum += off * f.w; weight += f.w; }
+                });
+                if (weight) peak = fold(peak + sum / weight);
+            } else {
+                peak = fold(centsOf(strongestHum(x, sr)));
+            }
+
+            const note = Math.round(peak / 100) % 12;
+            const cents = Math.round(peak - Math.round(peak / 100) * 100);
+            const track = frames.map(f => ({ t: f.t, c: around(centsOf(f.hz), peak), w: f.w }));
+            const agree = frames.filter(f => Math.abs(around(centsOf(f.hz), peak)) < 60).length;
+            return { note, cents, voiced, clear: voiced >= 0.08, agree: agree / Math.max(1, frames.length), track, seconds: n / sr, loudness };
+        }
+
+        // The spectrum, averaged over the whole recording, then every candidate low note scored by
+        // how much sound sits at it and its first several overtones
+        function strongestHum(x, sr) {
+            const size = 4096;
+            const re = new Float32Array(size), im = new Float32Array(size);
+            const average = new Float32Array(size / 2);
+            for (let start = 0; start + size <= x.length; start += size / 2) {
+                for (let i = 0; i < size; i++) {
+                    re[i] = x[start + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / size));
+                    im[i] = 0;
+                }
+                fft(re, im);
+                for (let k = 0; k < size / 2; k++) average[k] += Math.hypot(re[k], im[k]);
+            }
+            const floor = average.reduce((a, b) => a + b, 0) / average.length || 1;
+            const level = f => {
+                const k = f * size / sr;
+                const i = Math.floor(k);
+                if (i + 1 >= average.length) return 0;
+                return Math.log(1 + (average[i] + (average[i + 1] - average[i]) * (k - i)) / floor);
+            };
+            let best = 110, bestScore = -1;
+            for (let c = 0; c < 2400 * 1.75; c += 5) {
+                const f0 = 55 * Math.pow(2, c / 1200);
+                let score = 0;
+                for (let h = 1; h <= 8; h++) score += level(f0 * h) * Math.pow(0.82, h - 1);
+                if (score > bestScore) { bestScore = score; best = f0; }
+            }
+            return best;
+        }
+
+        // In-place radix-2 FFT
+        function fft(re, im) {
+            const n = re.length;
+            for (let i = 1, j = 0; i < n; i++) {
+                let bit = n >> 1;
+                for (; j & bit; bit >>= 1) j ^= bit;
+                j ^= bit;
+                if (i < j) {
+                    [re[i], re[j]] = [re[j], re[i]];
+                    [im[i], im[j]] = [im[j], im[i]];
+                }
+            }
+            for (let len = 2; len <= n; len <<= 1) {
+                const angle = -2 * Math.PI / len;
+                const wr = Math.cos(angle), wi = Math.sin(angle);
+                for (let i = 0; i < n; i += len) {
+                    let cr = 1, ci = 0;
+                    for (let j = 0; j < len / 2; j++) {
+                        const a = i + j, b = a + len / 2;
+                        const tr = re[b] * cr - im[b] * ci;
+                        const ti = re[b] * ci + im[b] * cr;
+                        re[b] = re[a] - tr; im[b] = im[a] - ti;
+                        re[a] += tr; im[a] += ti;
+                        const next = cr * wr - ci * wi;
+                        ci = cr * wi + ci * wr;
+                        cr = next;
+                    }
+                }
+            }
+        }
+
+        // ---- Recording ----
+        async function listenHere() {
+            if (listening || !ctx) return;
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+            } catch (e) {
+                hereNote("Little Guy couldn't hear: the microphone is off for this page. Allow it in your browser's settings and try again.");
+                return;
+            }
+            listening = true;
+            if (navigator.audioSession) {
+                try { navigator.audioSession.type = 'play-and-record'; } catch (e) {}
+            }
+            await ctx.resume();
+            // Hush the music so it doesn't hear itself
+            const t = ctx.currentTime;
+            if (playing) {
+                master.gain.cancelScheduledValues(t);
+                master.gain.setValueAtTime(master.gain.value, t);
+                master.gain.linearRampToValueAtTime(0.05, t + 0.4);
+            }
+            const button = document.getElementById('hereBtn');
+            button.classList.add('listening');
+            button.disabled = true;
+
+            const input = ctx.createMediaStreamSource(stream);
+            const tap = ctx.createScriptProcessor(4096, 1, 1);
+            const mute = ctx.createGain();
+            mute.gain.value = 0;
+            input.connect(tap).connect(mute).connect(ctx.destination);
+            const need = Math.round(ctx.sampleRate * HERE_SECONDS);
+            const samples = new Float32Array(need);
+            let got = 0;
+            // The first moment can carry the tap of your finger; let it pass
+            let skip = Math.round(ctx.sampleRate * 0.35);
+            await new Promise(resolve => {
+                tap.onaudioprocess = event => {
+                    let data = event.inputBuffer.getChannelData(0);
+                    if (skip > 0) {
+                        const drop = Math.min(skip, data.length);
+                        skip -= drop;
+                        data = data.subarray(drop);
+                    }
+                    const take = Math.min(data.length, need - got);
+                    samples.set(data.subarray(0, take), got);
+                    got += take;
+                    let energy = 0;
+                    for (let i = 0; i < data.length; i++) energy += data[i] * data[i];
+                    const rms = Math.sqrt(energy / Math.max(1, data.length));
+                    button.style.setProperty('--level', (0.7 + Math.min(1, rms * 12) * 0.9).toFixed(2));
+                    setText('hereBtnText', `listening… ${Math.max(1, Math.ceil((need - got) / ctx.sampleRate))}`);
+                    if (got >= need) resolve();
+                };
+            });
+            tap.onaudioprocess = null;
+            input.disconnect();
+            tap.disconnect();
+            stream.getTracks().forEach(track => track.stop());
+            if (navigator.audioSession) {
+                try { navigator.audioSession.type = 'playback'; } catch (e) {}
+            }
+            button.classList.remove('listening');
+            button.style.removeProperty('--level');
+            button.disabled = false;
+            listening = false;
+            const now = ctx.currentTime;
+            if (playing) {
+                master.gain.cancelScheduledValues(now);
+                master.gain.setValueAtTime(master.gain.value, now);
+                master.gain.linearRampToValueAtTime(0.9, now + 2);
+            } else {
+                ctx.suspend();
+            }
+            takeIn(samples, ctx.sampleRate, true);
+        }
+
+        // A recording, new or recalled: hear its note, set the key, and get it ready to weave in
+        function takeIn(samples, rate, fresh) {
+            const heard = hearPitch(samples, rate);
+            if (heard.loudness < 4e-4) {
+                renderHere();
+                hereNote('That was close to silent. Try somewhere with a hum to it: a fridge, traffic, wind, a room full of people, a creek.');
+                return;
+            }
+            hereHeard = heard;
+            const home = keyIndex(index.drone.key);
+            const semis = ((heard.note - home + 18) % 12) - 6;
+            settings.place = { note: heard.note, semis, cents: heard.cents };
+            saveSettings();
+
+            // Evened out (loud enough to use, never clipping), with soft ends
+            let peak = 0;
+            for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
+            const gain = peak ? 0.9 / peak : 1;
+            const edge = Math.round(rate * 0.02);
+            hereBuffer = ctx.createBuffer(1, samples.length, rate);
+            const data = hereBuffer.getChannelData(0);
+            for (let i = 0; i < samples.length; i++) {
+                const fade = Math.min(1, i / edge, (samples.length - 1 - i) / edge);
+                data[i] = samples[i] * gain * fade;
+            }
+            // The loop: its last second folded over its first, so it goes round without a seam
+            const fold = Math.min(Math.round(rate), Math.floor(samples.length / 3));
+            hereLoopBuffer = ctx.createBuffer(1, samples.length - fold, rate);
+            const loop = hereLoopBuffer.getChannelData(0);
+            for (let i = 0; i < loop.length; i++) {
+                if (i < fold) {
+                    const p = i / fold;
+                    loop[i] = samples[i] * gain * Math.sin(p * Math.PI / 2) + samples[samples.length - fold + i] * gain * Math.cos(p * Math.PI / 2);
+                } else {
+                    loop[i] = samples[i] * gain;
+                }
+            }
+            if (fresh) storeHere({ samples, rate });
+            if (playing) {
+                stopHere(ctx.currentTime + 0.5);
+                startHere(ctx.currentTime + 0.3);
+            }
+            renderHere();
+            requestTempo();
+        }
+
+        function forgetHere() {
+            settings.place = null;
+            saveSettings();
+            hereHeard = null;
+            if (playing) stopHere(ctx.currentTime + 2);
+            hereBuffer = hereLoopBuffer = null;
+            storeHere(null);
+            renderHere();
+            requestTempo();
+        }
+
+        // The last recording is kept on the device (in IndexedDB), so the place stays after a reload
+        function hereDb(mode, act) {
+            return new Promise((resolve, reject) => {
+                const open = indexedDB.open('littleguy', 1);
+                open.onupgradeneeded = () => open.result.createObjectStore('here');
+                open.onerror = () => reject(open.error);
+                open.onsuccess = () => {
+                    const tx = open.result.transaction('here', mode);
+                    const request = act(tx.objectStore('here'));
+                    tx.oncomplete = () => resolve(request.result);
+                    tx.onerror = () => reject(tx.error);
+                };
+            });
+        }
+
+        function storeHere(recording) {
+            try {
+                hereDb('readwrite', store => recording ? store.put(recording, 'last') : store.delete('last')).catch(() => {});
+            } catch (e) {}
+        }
+
+        async function recallHere() {
+            try {
+                const recording = await hereDb('readonly', store => store.get('last'));
+                if (recording && recording.samples) takeIn(recording.samples, recording.rate, false);
+                else if (settings.place) {
+                    settings.place = null;
+                    saveSettings();
+                }
+            } catch (e) {}
+            renderHere();
+        }
+
+        // ---- Weaving it in ----
+        function tuneHere(at) {
+            if (!hereBus) return;
+            const level = hereBuffer && playing ? 0.12 + 0.88 * settings.here : 0;
+            hereBus.gain.setTargetAtTime(level, at ?? ctx.currentTime, 0.8);
+            if (hereLoop) hereLoop.level.gain.setTargetAtTime(0.35 * (1 - 0.6 * settings.here), at ?? ctx.currentTime, 0.8);
+            renderNow();
+        }
+
+        function startHere(at) {
+            if (!hereLoopBuffer || hereLoop) return tuneHere(at);
+            const source = ctx.createBufferSource();
+            source.buffer = hereLoopBuffer;
+            source.loop = true;
+            const darken = ctx.createBiquadFilter();
+            darken.type = 'lowpass';
+            darken.frequency.value = 1600;
+            const level = ctx.createGain();
+            level.gain.value = 0;
+            source.connect(darken).connect(level).connect(hereBus);
+            source.start(at, Math.random() * hereLoopBuffer.duration);
+            hereLoop = { source, level };
+            nextGrain = at + 0.5;
+            tuneHere(at);
+        }
+
+        function stopHere(at) {
+            if (hereBus) {
+                hereBus.gain.cancelScheduledValues(ctx.currentTime);
+                hereBus.gain.setTargetAtTime(0, ctx.currentTime, 0.3);
+            }
+            if (hereLoop) {
+                try { hereLoop.source.stop(at); } catch (e) {}
+                hereLoop = null;
+            }
+        }
+
+        // Grains come more often as Here and Kindling rise; calm grains are longer
+        function scheduleGrains(until) {
+            if (!hereBuffer || !playing || listening) {
+                nextGrain = until;
+                return;
+            }
+            const h = settings.here;
+            const perSecond = 1 + 11 * h * h + 3 * settings.kindling;
+            const eighth = clock.barTime / (index.beatsPerBar * 2);
+            while (nextGrain < until) {
+                let at = nextGrain;
+                if (Math.random() < 0.1 + 0.55 * settings.kindling) at = clock.start + Math.ceil((at - clock.start) / eighth) * eighth;
+                grain(Math.max(at, ctx.currentTime + 0.02), perSecond);
+                nextGrain += -Math.log(1 - Math.random() * 0.999) / perSecond;
+            }
+        }
+
+        // Tuned to the hum: the place is in its key, so as-is is in tune, and so are its octaves,
+        // the fifth above and the twelfth
+        const GRAIN_RATES = [[1, 5], [0.5, 2], [2, 2], [1.5, 1.5], [3, 0.6], [0.75, 0.6]];
+        const HANN = Float32Array.from({ length: 64 }, (_, i) => Math.sin(Math.PI * i / 63) ** 2);
+
+        function grain(at, perSecond) {
+            const calm = 1 - settings.kindling;
+            const length = 0.07 + Math.random() * (0.18 + 0.55 * calm);
+            const rate = pickWeighted(GRAIN_RATES, r => r[1])[0];
+            const span = length * rate;
+            const source = ctx.createBufferSource();
+            source.buffer = hereBuffer;
+            source.playbackRate.value = rate;
+            const envelope = ctx.createGain();
+            envelope.gain.value = 0;
+            const amp = 0.55 / Math.sqrt(1 + perSecond * length) / Math.sqrt(rate);
+            envelope.gain.setValueCurveAtTime(HANN.map(v => v * amp), at, length);
+            const pan = ctx.createStereoPanner();
+            pan.pan.value = (Math.random() * 2 - 1) * 0.75;
+            source.connect(envelope).connect(pan).connect(hereBus);
+            source.start(at, Math.random() * Math.max(0, hereBuffer.duration - span), span + 0.02);
+            sparks.push({ at, dur: length, x: Math.random(), y: Math.random(), rate });
+            if (sparks.length > 120) sparks.shift();
+        }
+
+        // ---- The Here card ----
+        function hereNote(html) {
+            document.getElementById('hereNote').innerHTML = html;
+        }
+
+        function renderHere() {
+            const has = Boolean(hereBuffer && hereHeard);
+            document.getElementById('hereForget').hidden = !has;
+            document.getElementById('hereRow').hidden = !has;
+            document.getElementById('hereLine').hidden = !has || !hereHeard.clear;
+            setText('hereBtnText', has ? 'listen again' : 'listen here');
+            if (!has) {
+                hereNote('Record eight seconds of wherever you are. Little Guy finds the note the place hums at, plays in that key, and weaves the sound itself in.');
+                return;
+            }
+            const name = NOTE_NAMES[hereHeard.note];
+            const c = hereHeard.cents;
+            const tuning = Math.abs(c) <= 8 ? 'right on it' : Math.abs(c) <= 25 ? (c > 0 ? 'a touch sharp' : 'a touch flat') : (c > 0 ? 'well sharp' : 'well flat');
+            const cents = Math.abs(c) <= 8 ? '' : ` (${c > 0 ? '+' : '−'}${Math.abs(c)}¢)`;
+            hereNote(hereHeard.clear
+                ? `This place hums around <b>${name}</b>, ${tuning}${cents}. Little Guy plays in ${name} now, tuned to match, with the place itself woven through.`
+                : `No one clear note here, so Little Guy took the strongest hum under it: <b>${name}</b>${cents}. It plays in ${name} now, with the place woven through.`);
+            drawHereLine();
+        }
+
+        // Every pitched moment as a dot (how far from the note, over the eight seconds), the note
+        // as a line, and the trend through the dots that agree
+        function drawHereLine() {
+            const canvas = document.getElementById('hereLine');
+            if (canvas.hidden || !hereHeard) return;
+            const scale = window.devicePixelRatio || 1;
+            const w = canvas.clientWidth, h = canvas.clientHeight;
+            if (!w) return;
+            canvas.width = Math.round(w * scale);
+            canvas.height = Math.round(h * scale);
+            const g = canvas.getContext('2d');
+            g.scale(scale, scale);
+            g.clearRect(0, 0, w, h);
+            const range = 300;
+            const yOf = c => h / 2 - Math.max(-1, Math.min(1, c / range)) * (h / 2 - 6);
+            const xOf = t => 6 + t / hereHeard.seconds * (w - 12);
+            g.strokeStyle = 'rgba(139, 119, 89, 0.35)';
+            g.lineWidth = 1;
+            [-200, -100, 100, 200].forEach(c => {
+                g.beginPath();
+                g.moveTo(0, yOf(c));
+                g.lineTo(w, yOf(c));
+                g.stroke();
+            });
+            const maxW = Math.max(...hereHeard.track.map(p => p.w), 1e-9);
+            hereHeard.track.forEach(p => {
+                const strength = Math.sqrt(p.w / maxW);
+                g.fillStyle = Math.abs(p.c) < 60 ? `rgba(47, 111, 107, ${0.25 + 0.6 * strength})` : `rgba(139, 119, 89, ${0.15 + 0.4 * strength})`;
+                g.beginPath();
+                g.arc(xOf(p.t), yOf(p.c), 1.5 + 1.5 * strength, 0, Math.PI * 2);
+                g.fill();
+            });
+            g.strokeStyle = '#2f6f6b';
+            g.lineWidth = 2;
+            g.beginPath();
+            g.moveTo(0, h / 2);
+            g.lineTo(w, h / 2);
+            g.stroke();
+            // Weighted least squares through the dots that agree
+            const near = hereHeard.track.filter(p => Math.abs(p.c) < 100);
+            const sw = near.reduce((a, p) => a + p.w, 0);
+            if (near.length > 4 && sw) {
+                const mt = near.reduce((a, p) => a + p.w * p.t, 0) / sw;
+                const mc = near.reduce((a, p) => a + p.w * p.c, 0) / sw;
+                const vt = near.reduce((a, p) => a + p.w * (p.t - mt) ** 2, 0);
+                const slope = vt ? near.reduce((a, p) => a + p.w * (p.t - mt) * (p.c - mc), 0) / vt : 0;
+                g.strokeStyle = 'rgba(148, 64, 79, 0.75)';
+                g.setLineDash([4, 4]);
+                g.lineWidth = 1.5;
+                g.beginPath();
+                g.moveTo(xOf(0), yOf(mc + slope * (0 - mt)));
+                g.lineTo(xOf(hereHeard.seconds), yOf(mc + slope * (hereHeard.seconds - mt)));
+                g.stroke();
+                g.setLineDash([]);
+            }
+            g.fillStyle = '#2f6f6b';
+            g.font = '12px Lumios Typewriter, Georgia, serif';
+            g.fillText(NOTE_NAMES[hereHeard.note], 8, h / 2 - 5);
+        }
+
+        window.addEventListener('resize', drawHereLine);
 
         // ---- Picture ----
         // Each layer is a soft blot of color: the bed pools in the middle, tunes drift around it,
@@ -1636,6 +2363,24 @@
                 paint.arc(R, R, r, 0, Math.PI * 2);
                 paint.stroke();
             });
+            // The place: a grain is a fleck of teal that flares and fades where it lands
+            for (let i = sparks.length - 1; i >= 0; i--) {
+                const spark = sparks[i];
+                const age = (now - spark.at) / (spark.dur + 0.8);
+                if (age > 1 || !playing) {
+                    sparks.splice(i, 1);
+                    continue;
+                }
+                if (age < 0) continue;
+                const r = R * (0.15 + 0.75 * spark.y);
+                const x = R + Math.cos(spark.x * Math.PI * 2) * r;
+                const y = R + Math.sin(spark.x * Math.PI * 2) * r;
+                const size = R * (0.025 + 0.02 * spark.rate) * (1 + age);
+                paint.fillStyle = `rgba(47, 111, 107, ${0.55 * (1 - age) * Math.min(1, settings.here * 1.6 + 0.2)})`;
+                paint.beginPath();
+                paint.arc(x, y, size, 0, Math.PI * 2);
+                paint.fill();
+            }
             const beatTime = clock ? clock.barTime / index.beatsPerBar : 1;
             const beat = clock && playing ? ((now - clock.start) / beatTime % 1 + 1) % 1 : 0.5;
             const shown = playing ? voices : [];
@@ -1695,12 +2440,13 @@
         function renderNow() {
             const order = { bed: 0, low: 1, rhythm: 2, tune: 3 };
             const names = playing ? voices.filter(v => !v.leaving).sort((a, b) => order[a.stem.role] - order[b.stem.role]).map(v => v.stem.instrument) : [];
+            if (playing && hereBuffer && settings.here > 0.01) names.push('here');
             if (playing && drone && drone.voiceCount()) names.unshift('hum');
             setText('now', names.join(' · '));
         }
 
         function render() {
-            ['kindling', 'hour', 'gait', 'hum'].forEach(name => {
+            ['kindling', 'hour', 'gait', 'hum', 'here'].forEach(name => {
                 document.getElementById(name).value = Math.round((settings[name] ?? 0.5) * 1000);
             });
         }

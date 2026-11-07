@@ -16,6 +16,15 @@ sliders steer it, loosely.
   never still: its voices swell and sink, and any but the root may drop out for a while and
   ease back in.
 
+**Here:** tap **listen here** and it records eight seconds of wherever you are (the music
+hushes while it listens). It finds the note the place hums at, a fridge, traffic, wind, a creek,
+and shows it: every pitched moment as a dot, the note as a line, the trend through them dashed.
+Then the hum and every loop move into that key, tuned to the cent (the loops are pitch-shifted
+and re-timed so the tempo holds), and the recording itself is woven in: grains of it, tuned to
+the hum, scattered through a long hall over a faint loop of the place. The **Here** slider runs
+from a trace to all around; more Kindling puts more of the grains on the beat. The recording stays
+on your device until you tap **let it go**.
+
 Every loop runs in time with the rest; layers come and go on bar lines, sway a little on their
 own, and now and then step back for a bar or two. The picture is the music: each layer is a
 blot of color, the hum is rings in the middle, the low end glows along the bottom.
