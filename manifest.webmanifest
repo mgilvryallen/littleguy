@@ -1,7 +1,7 @@
 {
   "name": "Little Guy",
   "short_name": "Little Guy",
-  "description": "Loops and a drone that layer and wander on their own. Press play and it builds; four sliders steer it, loosely. Record a few seconds of wherever you are and it plays in that place's key, with the place woven in.",
+  "description": "Generative ambient loopy guy. Capture a clip of wherever you are and let him run with it. Four mysterious sliders guide his movement, but who can say what they do?",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
